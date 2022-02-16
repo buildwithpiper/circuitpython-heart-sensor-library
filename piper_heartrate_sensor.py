@@ -596,7 +596,7 @@ INTERNAL_OSC_FREQ = 128000
 
 class piper_heart_sensor:
     # Initialize the sensor
-    def __init__(self, i2c, smoothing=3, pulse_rep_freq=150, samples_to_average=6, sample_depth=1, clock_divisor=1):
+    def __init__(self, i2c, smoothing=3, pulse_rep_freq=250, samples_to_average=12, sample_depth=1, clock_divisor=1):
 
         self.i2c = i2c
         self.i2c.try_lock()
@@ -827,7 +827,7 @@ class piper_heart_sensor:
         self.last_reading[0].append(_sensor_output[0][0])
         self.last_reading[0].pop(0)
 
-        self.reading_average = (self.reading_average * self.smoothing * 6 + _sensor_output[0][0]) / (self.smoothing * 6 + 1)
+        self.reading_average = (self.reading_average * self.smoothing * 10 + _sensor_output[0][0]) / (self.smoothing * 10 + 1)
         
         self.std_dev_readings.append(_sensor_output[0][0] - self.reading_average)
         self.std_dev_readings.pop(0)
