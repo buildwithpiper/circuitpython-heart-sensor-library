@@ -822,40 +822,41 @@ class piper_heart_sensor:
 
     # get smoothed values
     def read_sensor(self):
-        _sensor_output = self.read_fifo()
-        
-        self.last_reading[0].append(_sensor_output[0][0])
-        self.last_reading[0].pop(0)
-
-        self.reading_average = (self.reading_average * self.smoothing * 10 + _sensor_output[0][0]) / (self.smoothing * 10 + 1)
-        
-        self.std_dev_readings.append(_sensor_output[0][0] - self.reading_average)
-        self.std_dev_readings.pop(0)
-
-        _current_reading = ulab.numpy.mean(self.last_reading[0]) - self.reading_average
-        
-        if (_current_reading > ulab.numpy.max(self.std_dev_readings) * 0.1):
-            self.peak_detect = 1
-        elif (_current_reading < ulab.numpy.min(self.std_dev_readings) * 0.1):
-            self.peak_detect = -1
-        else:
-            self.peak_detect = 0
+        for _z in range(2):  # take 2 samples - helps with smoothing/averaging
+            _sensor_output = self.read_fifo()
             
-        if (self.peak_detect == 1 and self.last_peak_state == -1):
-            # rising
-            self.last_peak_state = 1
-        elif (self.peak_detect == -1 and self.last_peak_state == 1):
-            # falling
-            self.last_peak_state = -1
-            _mark = time.monotonic()
-            if (self.last_peak_mark is not None):
-                _tmp_hr = _mark - self.last_peak_mark
-                _tmp_hr = 60 * (1 / _tmp_hr)
-                if (_tmp_hr <= 220 and _tmp_hr >= 35):
-                    self.heart_rate_measurement = _tmp_hr
-            self.last_peak_mark = _mark
+            self.last_reading[0].append(_sensor_output[0][0])
+            self.last_reading[0].pop(0)
 
-        return _current_reading
+            self.reading_average = (self.reading_average * self.smoothing * 10 + _sensor_output[0][0]) / (self.smoothing * 10 + 1)
+            
+            self.std_dev_readings.append(_sensor_output[0][0] - self.reading_average)
+            self.std_dev_readings.pop(0)
+
+            _current_reading = ulab.numpy.mean(self.last_reading[0]) - self.reading_average
+            
+            if (_current_reading > ulab.numpy.max(self.std_dev_readings) * 0.1):
+                self.peak_detect = 1
+            elif (_current_reading < ulab.numpy.min(self.std_dev_readings) * 0.1):
+                self.peak_detect = -1
+            else:
+                self.peak_detect = 0
+                
+            if (self.peak_detect == 1 and self.last_peak_state == -1):
+                # rising
+                self.last_peak_state = 1
+            elif (self.peak_detect == -1 and self.last_peak_state == 1):
+                # falling
+                self.last_peak_state = -1
+                _mark = time.monotonic()
+                if (self.last_peak_mark is not None):
+                    _tmp_hr = _mark - self.last_peak_mark
+                    _tmp_hr = 60 * (1 / _tmp_hr)
+                    if (_tmp_hr <= 220 and _tmp_hr >= 35):
+                        self.heart_rate_measurement = _tmp_hr
+                self.last_peak_mark = _mark
+
+        return int(_current_reading / 10)
 
     # Return the measured heart rate
     @property
@@ -877,7 +878,7 @@ class piper_heart_sensor:
 
         # Build some FIFO arrays for averaging/smoothing the data from the sensor
         self.last_reading = [[0] * self.smoothing,[0] * self.smoothing]
-        self.std_dev_readings = [0] * (self.smoothing * 6)
+        self.std_dev_readings = [0] * (self.smoothing * 10)
         self.reading_average = 0
 
         # start the timer to begin operation
