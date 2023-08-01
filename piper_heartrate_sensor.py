@@ -27,7 +27,10 @@
 import busio
 import board
 import time
-import ulab
+try:
+    import numpy
+except:
+    from ulab import numpy
 
 
 __version__ = "0.9.0"
@@ -833,11 +836,11 @@ class piper_heart_sensor:
             self.std_dev_readings.append(_sensor_output[0][0] - self.reading_average)
             self.std_dev_readings.pop(0)
 
-            _current_reading = ulab.numpy.mean(self.last_reading[0]) - self.reading_average
+            _current_reading = numpy.mean(self.last_reading[0]) - self.reading_average
             
-            if (_current_reading > ulab.numpy.max(self.std_dev_readings) * 0.1):
+            if (_current_reading > numpy.max(self.std_dev_readings) * 0.1):
                 self.peak_detect = 1
-            elif (_current_reading < ulab.numpy.min(self.std_dev_readings) * 0.1):
+            elif (_current_reading < numpy.min(self.std_dev_readings) * 0.1):
                 self.peak_detect = -1
             else:
                 self.peak_detect = 0
