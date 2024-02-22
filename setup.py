@@ -25,7 +25,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/x-rst",
     # The project's main homepage.
-    url="https://github.com/buildwithpiper/HeartRateSensor.git",
+    url="https://github.com/buildwithpiper/circuitpython-heart-sensor-library.git",
     # Author details
     author="",
     author_email="",
