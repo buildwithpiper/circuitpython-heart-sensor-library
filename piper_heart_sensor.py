@@ -34,7 +34,7 @@ except:
 
 
 __version__ = "0.9.0"
-__repo__ = "https://github.com/buildwithpiper/HeartSensor.git"
+__repo__ = "https://github.com/buildwithpiper/circuitpython-heart-sensor-library.git"
 
 
 # ----------- Constants and Registers -----------
