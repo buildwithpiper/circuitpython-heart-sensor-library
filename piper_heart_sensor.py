@@ -1,7 +1,7 @@
 ################################################################################
 # The MIT License (MIT)
 #
-# Copyright (c) 2021 Piper Learning, Inc. and Matthew Matz
+# Copyright (c) 2024 Piper Learning, Inc. and Matthew Matz
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -27,13 +27,10 @@
 import busio
 import board
 import time
-try:
-    import numpy
-except:
-    from ulab import numpy
+import ulab
 
 
-__version__ = "0.9.0"
+__version__ = "0.9.5"
 __repo__ = "https://github.com/buildwithpiper/circuitpython-heart-sensor-library.git"
 
 
@@ -603,7 +600,6 @@ class piper_heart_sensor:
 
         self.i2c = i2c
         self.i2c.try_lock()
-
         
         # Clock and sampling related settings
         self.sample_depth = sample_depth                     # samples to retain in FIFO
@@ -620,148 +616,157 @@ class piper_heart_sensor:
         # Global to keep track of the lat time the FIFO was read
         self.last_fifo_read = time.monotonic()
 
-        # reset the device
-        self.reset()
-        time.sleep(0.01)
+        # Determine the version of the sensor
+        # Original version is the PPSI262 (True), the new version is Attiny-based (False)
+        self.sensor_type = False   
+        if (self.register_get(DESIGN_ID, DESIGN_ID_MASK) != 84):
+            self.sensor_type = True
 
-        # Divide the clock
-        if (self.clock_divisor >= 16):
-            self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 7)
-            self.clock_divisor = 16
-        elif (self.clock_divisor >= 8):
-            self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 6)
-            self.clock_divisor = 8
-        elif (self.clock_divisor >= 4):
-            self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 5)
-            self.clock_divisor = 4
-        elif (self.clock_divisor >= 2):
-            self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 4)
-            self.clock_divisor = 2
+            # reset the device
+            self.reset()
+            time.sleep(0.01)
+
+            # Divide the clock
+            if (self.clock_divisor >= 16):
+                self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 7)
+                self.clock_divisor = 16
+            elif (self.clock_divisor >= 8):
+                self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 6)
+                self.clock_divisor = 8
+            elif (self.clock_divisor >= 4):
+                self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 5)
+                self.clock_divisor = 4
+            elif (self.clock_divisor >= 2):
+                self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 4)
+                self.clock_divisor = 2
+            else:
+                self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 0)
+                self.clock_divisor = 1
+
+            _freq = INTERNAL_OSC_FREQ / self.clock_divisor
+            _tick_period = 1000000 / _freq
+            _prf_count = int(_freq / self.pulse_rep_freq) - 1
+
+
+            self.register_set(NUMAV, NUMAV_MASK, int(self.samples_to_average - 1))  # Set the ADC output to be the average of [self.samples_to_average] samples
+
+            # Setup LED current drivers and switching
+            self.register_set(ILED_FS, ILED_FS_MASK, 1)             # Set the full-scale output of the LED current driver to 100mA (set to 0 for 50mA)
+            self.register_set(EN_DRV2_LED1, EN_DRV2_LED1_MASK, 1)   # Enable the second current dirver for LED1 (Green)
+            self.register_set(EN_DRV2_LED2, EN_DRV2_LED2_MASK, 1)   # Enable the second current dirver for LED1 (IR)
+
+            # Green LED (LED1) - Should output 150mA according to datasheet
+            self.register_set(ILED1_MSB, ILED1_MSB_MASK, 63)        # LED1's current to 100mA * 2 drivers = 200mA (high bits)
+            self.register_set(ILED1_LSB, ILED1_LSB_MASK, 3)         # LED1's current to 100mA * 2 drivers = 200mA (low bits)
+
+            # IR LED (LED2) - Should output 100 mA according to datasheet
+            self.register_set(ILED2_MSB, ILED2_MSB_MASK, 63)        # LED2's current to 75mA * 2 drivers = 150mA (high bits)
+            self.register_set(ILED2_LSB, ILED2_LSB_MASK, 3)         # LED2's current to 75mA * 2 drivers = 150mA (low bits)
+
+            # Determine the sampling rate for the sensor (relative to the PRF?) - all 4 should be set to idential values
+            self.register_set(MASK_PPG, MASK_PPG_MASK, 0b0)         # 3 bits wide - no idea what this does.
+            self.register_set(MASK1_PPG, MASK1_PPG_MASK, 0b0)
+            self.register_set(MASK2_PPG, MASK2_PPG_MASK, 0b0)
+            self.register_set(MASK3_PPG, MASK3_PPG_MASK, 0b0)
+
+            # Set the TIA (trans-impedence amplifier) gain - this is touchy.
+            # Notes:  Too much capacitance seems to wipe out any useful signal.  
+            # Too much resistance cranks the gain and saturates it, and too little doesn't lift the signal
+            # above the noise floor
+            self.register_set(TIA_GAIN_LSB, TIA_GAIN_LSB_MASK, 0b011)  # 3-bits (LSB) - resistor value
+            self.register_set(TIA_GAIN_MSB, TIA_GAIN_MSB_MASK, 0)      # 1-bit (MSB)
+            self.register_set(TIA_CF, TIA_CF_MASK, 0b000)              # 3-bits - capacitor value
+
+            # Setup the FIFO
+            # TODO: different FIFO configurations store different data - build functions/conditionals for setting this.
+            self.register_set(FIFO_PARTITION, FIFO_PARTITION_MASK, 5)  # store (LED2—Ambient2), (LED1—Ambient1) ADC values
+            self.register_set(REG_FIFO_PERIOD, REG_FIFO_PERIOD_MASK, self.sample_depth) # retain [self.sample_depth] sample cycles
+            self.register_set(FIFO_EN, FIFO_EN_MASK, 1)                # turn on the FIFO
+
+            # Do a bunch of calculations to set the timings for things based on the clock frequency, LED configuration, etc.
+            # these are a bit generous - if you need a really high PRF - you could tighten some of these a bit
+            # Constants here are microseconds.
+            _active_phase_start = int(520 / _tick_period) + 1 # this one is very generous
+            _led_on_width = int(70 / _tick_period) + 1
+            _sampling_start_delay = int(30 / _tick_period) + 1
+            _sampling_width = int(35 / _tick_period) + 1
+            _convert_start_delay = _led_on_width + 2
+            _convert_width = int((56.5 * self.samples_to_average + 72) / _tick_period) + 16 # and especially this one is too
+            _phase_width = _convert_start_delay + _convert_width + 4
+            _phase_0_start = 0 + _active_phase_start
+            _phase_1_start = _phase_width * 1 + _active_phase_start
+            _phase_2_start = _phase_width * 2 + _active_phase_start
+            _phase_3_start = _phase_width * 3 + _active_phase_start
+
+            #  TODO:
+            #   If active_phase_end is greater than the PRF count, throw an error
+            #   Set up deep sleep behavior options
+            #   Set up external oscillator options
+
+            _dont_activate = _prf_count + 16
+
+            # Set the sensor to run a 500Hz PRF (Pulse Repetition Frequency) cycle
+            self.register_set(PRPCOUNT, PRPCOUNT_MASK, _prf_count)
+
+            self.register_set(ENABLE_ULP, ENABLE_ULP_MASK, 1)
+
+            self.register_set(LED2LEDSTC, LED2LEDSTC_MASK, _phase_0_start)
+            self.register_set(LED2LEDENDC, LED2LEDENDC_MASK, _phase_0_start + _led_on_width)
+            self.register_set(LED2STC, LED2STC_MASK, _phase_0_start + _sampling_start_delay)
+            self.register_set(LED2ENDC, LED2ENDC_MASK, _phase_0_start + _sampling_start_delay + _sampling_width)
+            self.register_set(LED2CONVST, LED2CONVST_MASK, _phase_0_start + _convert_start_delay)
+            self.register_set(LED2CONVEND, LED2CONVEND_MASK, _phase_0_start + _convert_start_delay + _convert_width)
+
+            self.register_set(LED3LEDSTC, LED3LEDSTC_MASK, _dont_activate)      # Don't turn on
+            self.register_set(LED3LEDENDC, LED3LEDENDC_MASK, _dont_activate)    # Don't turn on
+            self.register_set(ALED2STC, ALED2STC_MASK, _phase_1_start + _sampling_start_delay)
+            self.register_set(ALED2ENDC, ALED2ENDC_MASK, _phase_1_start + _sampling_start_delay + _sampling_width)
+            self.register_set(ALED2CONVST, ALED2CONVST_MASK, _phase_1_start + _convert_start_delay)
+            self.register_set(ALED2CONVEND, ALED2CONVEND_MASK, _phase_1_start + _convert_start_delay + _convert_width)
+
+            self.register_set(LED1LEDSTC, LED1LEDSTC_MASK, _phase_2_start)
+            self.register_set(LED1LEDENDC, LED1LEDENDC_MASK, _phase_2_start + _led_on_width)
+            self.register_set(LED1STC, LED1STC_MASK, _phase_2_start + _sampling_start_delay)
+            self.register_set(LED1ENDC, LED1ENDC_MASK, _phase_2_start + _sampling_start_delay + _sampling_width)
+            self.register_set(LED1CONVST, LED1CONVST_MASK, _phase_2_start + _convert_start_delay)
+            self.register_set(LED1CONVEND, LED1CONVEND_MASK, _phase_2_start + _convert_start_delay + _convert_width)
+
+            self.register_set(LED4LEDSTC, LED4LEDSTC_MASK, _dont_activate)      # Don't turn on
+            self.register_set(LED4LEDENDC, LED4LEDENDC_MASK, _dont_activate)    # Don't turn on
+            self.register_set(ALED1STC, ALED1STC_MASK, _phase_3_start + _sampling_start_delay)
+            self.register_set(ALED1ENDC, ALED1ENDC_MASK, _phase_3_start + _sampling_start_delay + _sampling_width)
+            self.register_set(ALED1CONVST, ALED1CONVST_MASK, _phase_3_start + _convert_start_delay)
+            self.register_set(ALED1CONVEND, ALED1CONVEND_MASK, _phase_3_start + _convert_start_delay + _convert_width)
+
+
+            self.register_set(DATA_RDY_STC, DATA_RDY_STC_MASK, _phase_3_start + _convert_start_delay + _convert_width + 6)
+            self.register_set(DATA_RDY_ENDC, DATA_RDY_ENDC_MASK, _phase_3_start + _convert_start_delay + _convert_width + 7)
+
+            # Active phase start and end timings
+            self.register_set(DYN_TIA_STC, DYN_TIA_STC_MASK, 0)
+            self.register_set(DYN_TIA_ENDC, DYN_TIA_ENDC_MASK, _dont_activate)
+            self.register_set(DYN_ADC_STC, DYN_ADC_STC_MASK, 0)
+            self.register_set(DYN_ADC_ENDC, DYN_ADC_ENDC_MASK, _dont_activate)
+            self.register_set(DYN_CLK_STC, DYN_CLK_STC_MASK, 0)
+            self.register_set(DYN_CLK_ENDC, DYN_CLK_ENDC_MASK, _dont_activate)
+
+            # Deep sleep behavior
+            # Not used - we aren't in a battery-powered application where power is a concern.
+            #self.register_set(CONTROL_DYN_TIA, CONTROL_DYN_TIA_MASK, 0)
+            #self.register_set(CONTROL_DYN_ADC, CONTROL_DYN_ADC_MASK, 0)
+            #self.register_set(CONTROL_DYN_ALDO, CONTROL_DYN_ALDO_MASK, 0)
+            #self.register_set(CONTROL_DYN_DLDO, CONTROL_DYN_DLDO_MASK, 0)
+            #self.register_set(SHORT_ALDO_TO_DLDO_IN_DEEP_SLEEP, SHORT_ALDO_TO_DLDO_IN_DEEP_SLEEP_MASK, 1)
+
+            # Deep sleep phase start and end timings
+            self.register_set(DEEP_SLEEP_STC, DEEP_SLEEP_STC_MASK, _dont_activate)    # Don't go into deep sleep
+            self.register_set(DEEP_SLEEP_ENDC, DEEP_SLEEP_ENDC_MASK, _dont_activate)  # Don't go into deep sleep
+
+            # Enable the internal oscillator
+            self.register_set(OSC_ENABLE, OSC_ENABLE_MASK, 1)    # Turn on the internal oscillator
+
         else:
-            self.register_set(CLKDIV_TE, CLKDIV_TE_MASK, 0)
-            self.clock_divisor = 1
-
-        _freq = INTERNAL_OSC_FREQ / self.clock_divisor
-        _tick_period = 1000000 / _freq
-        _prf_count = int(_freq / self.pulse_rep_freq) - 1
-
-
-        self.register_set(NUMAV, NUMAV_MASK, int(self.samples_to_average - 1))  # Set the ADC output to be the average of [self.samples_to_average] samples
-
-        # Setup LED current drivers and switching
-        self.register_set(ILED_FS, ILED_FS_MASK, 1)             # Set the full-scale output of the LED current driver to 100mA (set to 0 for 50mA)
-        self.register_set(EN_DRV2_LED1, EN_DRV2_LED1_MASK, 1)   # Enable the second current dirver for LED1 (Green)
-        self.register_set(EN_DRV2_LED2, EN_DRV2_LED2_MASK, 1)   # Enable the second current dirver for LED1 (IR)
-
-        # Green LED (LED1) - Should output 150mA according to datasheet
-        self.register_set(ILED1_MSB, ILED1_MSB_MASK, 63)        # LED1's current to 100mA * 2 drivers = 200mA (high bits)
-        self.register_set(ILED1_LSB, ILED1_LSB_MASK, 3)         # LED1's current to 100mA * 2 drivers = 200mA (low bits)
-
-        # IR LED (LED2) - Should output 100 mA according to datasheet
-        self.register_set(ILED2_MSB, ILED2_MSB_MASK, 63)        # LED2's current to 75mA * 2 drivers = 150mA (high bits)
-        self.register_set(ILED2_LSB, ILED2_LSB_MASK, 3)         # LED2's current to 75mA * 2 drivers = 150mA (low bits)
-
-        # Determine the sampling rate for the sensor (relative to the PRF?) - all 4 should be set to idential values
-        self.register_set(MASK_PPG, MASK_PPG_MASK, 0b0)         # 3 bits wide - no idea what this does.
-        self.register_set(MASK1_PPG, MASK1_PPG_MASK, 0b0)
-        self.register_set(MASK2_PPG, MASK2_PPG_MASK, 0b0)
-        self.register_set(MASK3_PPG, MASK3_PPG_MASK, 0b0)
-
-        # Set the TIA (trans-impedence amplifier) gain - this is touchy.
-        # Notes:  Too much capacitance seems to wipe out any useful signal.  
-        # Too much resistance cranks the gain and saturates it, and too little doesn't lift the signal
-        # above the noise floor
-        self.register_set(TIA_GAIN_LSB, TIA_GAIN_LSB_MASK, 0b011)  # 3-bits (LSB) - resistor value
-        self.register_set(TIA_GAIN_MSB, TIA_GAIN_MSB_MASK, 0)      # 1-bit (MSB)
-        self.register_set(TIA_CF, TIA_CF_MASK, 0b000)              # 3-bits - capacitor value
-
-        # Setup the FIFO
-        # TODO: different FIFO configurations store different data - build functions/conditionals for setting this.
-        self.register_set(FIFO_PARTITION, FIFO_PARTITION_MASK, 5)  # store (LED2—Ambient2), (LED1—Ambient1) ADC values
-        self.register_set(REG_FIFO_PERIOD, REG_FIFO_PERIOD_MASK, self.sample_depth) # retain [self.sample_depth] sample cycles
-        self.register_set(FIFO_EN, FIFO_EN_MASK, 1)                # turn on the FIFO
-
-        # Do a bunch of calculations to set the timings for things based on the clock frequency, LED configuration, etc.
-        # these are a bit generous - if you need a really high PRF - you could tighten some of these a bit
-        # Constants here are microseconds.
-        _active_phase_start = int(520 / _tick_period) + 1 # this one is very generous
-        _led_on_width = int(70 / _tick_period) + 1
-        _sampling_start_delay = int(30 / _tick_period) + 1
-        _sampling_width = int(35 / _tick_period) + 1
-        _convert_start_delay = _led_on_width + 2
-        _convert_width = int((56.5 * self.samples_to_average + 72) / _tick_period) + 16 # and especially this one is too
-        _phase_width = _convert_start_delay + _convert_width + 4
-        _phase_0_start = 0 + _active_phase_start
-        _phase_1_start = _phase_width * 1 + _active_phase_start
-        _phase_2_start = _phase_width * 2 + _active_phase_start
-        _phase_3_start = _phase_width * 3 + _active_phase_start
-
-        #  TODO:
-        #   If active_phase_end is greater than the PRF count, throw an error
-        #   Set up deep sleep behavior options
-        #   Set up external oscillator options
-
-        _dont_activate = _prf_count + 16
-
-        # Set the sensor to run a 500Hz PRF (Pulse Repetition Frequency) cycle
-        self.register_set(PRPCOUNT, PRPCOUNT_MASK, _prf_count)
-
-        self.register_set(ENABLE_ULP, ENABLE_ULP_MASK, 1)
-
-        self.register_set(LED2LEDSTC, LED2LEDSTC_MASK, _phase_0_start)
-        self.register_set(LED2LEDENDC, LED2LEDENDC_MASK, _phase_0_start + _led_on_width)
-        self.register_set(LED2STC, LED2STC_MASK, _phase_0_start + _sampling_start_delay)
-        self.register_set(LED2ENDC, LED2ENDC_MASK, _phase_0_start + _sampling_start_delay + _sampling_width)
-        self.register_set(LED2CONVST, LED2CONVST_MASK, _phase_0_start + _convert_start_delay)
-        self.register_set(LED2CONVEND, LED2CONVEND_MASK, _phase_0_start + _convert_start_delay + _convert_width)
-
-        self.register_set(LED3LEDSTC, LED3LEDSTC_MASK, _dont_activate)      # Don't turn on
-        self.register_set(LED3LEDENDC, LED3LEDENDC_MASK, _dont_activate)    # Don't turn on
-        self.register_set(ALED2STC, ALED2STC_MASK, _phase_1_start + _sampling_start_delay)
-        self.register_set(ALED2ENDC, ALED2ENDC_MASK, _phase_1_start + _sampling_start_delay + _sampling_width)
-        self.register_set(ALED2CONVST, ALED2CONVST_MASK, _phase_1_start + _convert_start_delay)
-        self.register_set(ALED2CONVEND, ALED2CONVEND_MASK, _phase_1_start + _convert_start_delay + _convert_width)
-
-        self.register_set(LED1LEDSTC, LED1LEDSTC_MASK, _phase_2_start)
-        self.register_set(LED1LEDENDC, LED1LEDENDC_MASK, _phase_2_start + _led_on_width)
-        self.register_set(LED1STC, LED1STC_MASK, _phase_2_start + _sampling_start_delay)
-        self.register_set(LED1ENDC, LED1ENDC_MASK, _phase_2_start + _sampling_start_delay + _sampling_width)
-        self.register_set(LED1CONVST, LED1CONVST_MASK, _phase_2_start + _convert_start_delay)
-        self.register_set(LED1CONVEND, LED1CONVEND_MASK, _phase_2_start + _convert_start_delay + _convert_width)
-
-        self.register_set(LED4LEDSTC, LED4LEDSTC_MASK, _dont_activate)      # Don't turn on
-        self.register_set(LED4LEDENDC, LED4LEDENDC_MASK, _dont_activate)    # Don't turn on
-        self.register_set(ALED1STC, ALED1STC_MASK, _phase_3_start + _sampling_start_delay)
-        self.register_set(ALED1ENDC, ALED1ENDC_MASK, _phase_3_start + _sampling_start_delay + _sampling_width)
-        self.register_set(ALED1CONVST, ALED1CONVST_MASK, _phase_3_start + _convert_start_delay)
-        self.register_set(ALED1CONVEND, ALED1CONVEND_MASK, _phase_3_start + _convert_start_delay + _convert_width)
-
-
-        self.register_set(DATA_RDY_STC, DATA_RDY_STC_MASK, _phase_3_start + _convert_start_delay + _convert_width + 6)
-        self.register_set(DATA_RDY_ENDC, DATA_RDY_ENDC_MASK, _phase_3_start + _convert_start_delay + _convert_width + 7)
-
-        # Active phase start and end timings
-        self.register_set(DYN_TIA_STC, DYN_TIA_STC_MASK, 0)
-        self.register_set(DYN_TIA_ENDC, DYN_TIA_ENDC_MASK, _dont_activate)
-        self.register_set(DYN_ADC_STC, DYN_ADC_STC_MASK, 0)
-        self.register_set(DYN_ADC_ENDC, DYN_ADC_ENDC_MASK, _dont_activate)
-        self.register_set(DYN_CLK_STC, DYN_CLK_STC_MASK, 0)
-        self.register_set(DYN_CLK_ENDC, DYN_CLK_ENDC_MASK, _dont_activate)
-
-        # Deep sleep behavior
-        # Not used - we aren't in a battery-powered application where power is a concern.
-        #self.register_set(CONTROL_DYN_TIA, CONTROL_DYN_TIA_MASK, 0)
-        #self.register_set(CONTROL_DYN_ADC, CONTROL_DYN_ADC_MASK, 0)
-        #self.register_set(CONTROL_DYN_ALDO, CONTROL_DYN_ALDO_MASK, 0)
-        #self.register_set(CONTROL_DYN_DLDO, CONTROL_DYN_DLDO_MASK, 0)
-        #self.register_set(SHORT_ALDO_TO_DLDO_IN_DEEP_SLEEP, SHORT_ALDO_TO_DLDO_IN_DEEP_SLEEP_MASK, 1)
-
-        # Deep sleep phase start and end timings
-        self.register_set(DEEP_SLEEP_STC, DEEP_SLEEP_STC_MASK, _dont_activate)    # Don't go into deep sleep
-        self.register_set(DEEP_SLEEP_ENDC, DEEP_SLEEP_ENDC_MASK, _dont_activate)  # Don't go into deep sleep
-
-        # Enable the internal oscillator
-        self.register_set(OSC_ENABLE, OSC_ENABLE_MASK, 1)    # Turn on the internal oscillator
+            self.sample_depth = 1
 
         self.i2c.unlock()
 
@@ -803,10 +808,11 @@ class piper_heart_sensor:
 
     # read the FIFO
     def read_fifo(self):
-        # Wait for the (sample count * cycle period) before trying to read from the FIFO again
         _time_now = time.monotonic()
         while (self.last_fifo_read > _time_now):
             _time_now = time.monotonic()
+
+        # Wait for the (sample count * cycle period) before trying to read from the FIFO again
         self.last_fifo_read = _time_now + self.samples_to_average/self.pulse_rep_freq
 
         _led2_values = []
@@ -818,48 +824,76 @@ class piper_heart_sensor:
         # TODO: There are different configurations for how the data is stored in the FIFO - create different conditions for them
         for i in range(self.sample_depth):
             j = i * 6
-            _led2_values.append(int.from_bytes(_csr[j:(j+3)], 'big'))
-            _led1_values.append(int.from_bytes(_csr[(j+3):(j+6)], 'big'))
+            _led2 = int.from_bytes(_csr[j:(j+3)], 'big')
+            _led1 = int.from_bytes(_csr[(j+3):(j+6)], 'big')
+
+            #The values from the Attiny version of the sensor will be smaller, so multiply them by 8
+            #if (self.sensor_type == False):
+            #    _led2 = _led2 << 3
+            #    _led1 = _led1 << 3
+
+            _led2_values.append(_led2)
+            _led1_values.append(_led1)
 
         return [_led1_values, _led2_values]
 
-    # get smoothed values
-    def read_sensor(self):
-        for _z in range(2):  # take 2 samples - helps with smoothing/averaging
-            _sensor_output = self.read_fifo()
-            
-            self.last_reading[0].append(_sensor_output[0][0])
-            self.last_reading[0].pop(0)
+    # heart rate calculation
+    def heart_beat_detect(self, current, upper, lower):
+        if (current > upper): 
+            self.peak_detect = 1
+        elif (current < lower):
+            self.peak_detect = -1
+        else:
+            self.peak_detect = 0
 
-            self.reading_average = (self.reading_average * self.smoothing * 10 + _sensor_output[0][0]) / (self.smoothing * 10 + 1)
-            
-            self.std_dev_readings.append(_sensor_output[0][0] - self.reading_average)
+        if (self.peak_detect == 1 and self.last_peak_state == -1):
+            # rising
+            self.last_peak_state = 1
+        elif (self.peak_detect == -1 and self.last_peak_state == 1):
+            # falling
+            self.last_peak_state = -1
+            _mark = time.monotonic()
+            if (self.last_peak_mark is not None):
+                _tmp_hr = _mark - self.last_peak_mark
+                _tmp_hr = int(60 * (1 / _tmp_hr))
+                if (_tmp_hr <= 220 and _tmp_hr >= 35):
+                    self.heart_rate_measurement = _tmp_hr
+            self.last_peak_mark = _mark
+
+    # get smoothed values
+    def read_sensor(self):    
+        if (self.sensor_type == True):
+            for _z in range(2):  # take 2 samples - helps with smoothing/averaging
+                _sensor_output = self.read_fifo()[0][0]
+                self.last_reading.append(_sensor_output)
+                self.last_reading.pop(0)
+
+                self.reading_average = (self.reading_average * self.smoothing * 10 + _sensor_output) / (self.smoothing * 10 + 1)
+                
+                self.std_dev_readings.append(_sensor_output - self.reading_average)
+                self.std_dev_readings.pop(0)
+
+                _current_reading = ulab.numpy.mean(self.last_reading) - self.reading_average
+                    
+                self.heart_beat_detect(_current_reading, ulab.numpy.max(self.std_dev_readings) * 0.1, ulab.numpy.min(self.std_dev_readings) * 0.1)
+
+            return int(_current_reading / 10)
+        
+        else:
+            _sensor_output = self.read_fifo()[0][0]
+            self.last_reading.append(_sensor_output)
+            self.last_reading.pop(0)
+
+            _current_reading = self.last_reading[-1] + self.last_reading[-4] - self.last_reading[-2] - self.last_reading[-3]
+            self.std_dev_readings.append(_current_reading)
             self.std_dev_readings.pop(0)
 
-            _current_reading = numpy.mean(self.last_reading[0]) - self.reading_average
-            
-            if (_current_reading > numpy.max(self.std_dev_readings) * 0.1):
-                self.peak_detect = 1
-            elif (_current_reading < numpy.min(self.std_dev_readings) * 0.1):
-                self.peak_detect = -1
-            else:
-                self.peak_detect = 0
-                
-            if (self.peak_detect == 1 and self.last_peak_state == -1):
-                # rising
-                self.last_peak_state = 1
-            elif (self.peak_detect == -1 and self.last_peak_state == 1):
-                # falling
-                self.last_peak_state = -1
-                _mark = time.monotonic()
-                if (self.last_peak_mark is not None):
-                    _tmp_hr = _mark - self.last_peak_mark
-                    _tmp_hr = 60 * (1 / _tmp_hr)
-                    if (_tmp_hr <= 220 and _tmp_hr >= 35):
-                        self.heart_rate_measurement = _tmp_hr
-                self.last_peak_mark = _mark
+            _threshold = max(ulab.numpy.max(self.std_dev_readings), -ulab.numpy.min(self.std_dev_readings)) / 2
 
-        return int(_current_reading / 10)
+            self.heart_beat_detect(_current_reading, _threshold, -_threshold)
+
+            return _sensor_output
+
 
     # Return the measured heart rate
     @property
@@ -868,7 +902,8 @@ class piper_heart_sensor:
 
     # Preform a software reset
     def reset(self):
-        self.register_set(SW_RESET, SW_RESET_MASK, 1)
+        if (self.sensor_type == True):
+            self.register_set(SW_RESET, SW_RESET_MASK, 1)
 
     # Start the sensor
     def start(self):
@@ -880,26 +915,32 @@ class piper_heart_sensor:
         self.last_peak_mark = None
 
         # Build some FIFO arrays for averaging/smoothing the data from the sensor
-        self.last_reading = [[0] * self.smoothing,[0] * self.smoothing]
+        self.last_reading = [0] * (self.smoothing * 30)
         self.std_dev_readings = [0] * (self.smoothing * 10)
         self.reading_average = 0
 
         # start the timer to begin operation
-        self.register_set(TIMEREN, TIMEREN_MASK, 1)
+        if (self.sensor_type == True):
+            self.register_set(TIMEREN, TIMEREN_MASK, 1)
 
-        for i in range(30):
-            sensor_output = self.read_fifo()
+        for _z in range(35):
+            _sensor_output = self.read_fifo()[0][0]
 
-            self.reading_average = sensor_output[0][0]
-            self.last_reading[0].append(self.reading_average)
-            self.last_reading[0].pop(0)
+            self.reading_average = self.reading_average + _sensor_output / 30
+            self.last_reading.append(_sensor_output)
+            self.last_reading.pop(0)
+
+            if (self.sensor_type == False and _z > 4):
+                self.std_dev_readings.append(self.last_reading[-1] + self.last_reading[-4] - self.last_reading[-2] - self.last_reading[-3])
+                self.std_dev_readings.pop(0)
 
             # TODO: This would be a good place to do some twiddling of the TIA gain and DC offset registers
             # Auto-calibrate?
 
     # Stop the sensor
     def stop(self):
-        self.register_set(TIMEREN, TIMEREN_MASK, 0)    # stop the timer to end operation
+        if (self.sensor_type == True):
+            self.register_set(TIMEREN, TIMEREN_MASK, 0)    # stop the timer to end operation
         self.i2c.unlock()
 
     # Allows for use in context managers.
