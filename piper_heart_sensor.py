@@ -28,7 +28,7 @@ import board
 import time
 import ulab
 
-__version__ = "0.9.6"
+__version__ = "1.1.0"
 __repo__ = "https://github.com/buildwithpiper/circuitpython-heart-sensor-library.git"
 
 
