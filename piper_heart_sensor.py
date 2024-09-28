@@ -28,14 +28,14 @@ import board
 import time
 import ulab
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __repo__ = "https://github.com/buildwithpiper/circuitpython-heart-sensor-library.git"
 
 
 #i2c address
 HEART_SENSOR_ADDR = 0x5B
 
-class piper_heart_sensor:
+class PiperHeartSensor:
     # Initialize the sensor
     def __init__(self, i2c, smoothing=3, channel=0):
 
