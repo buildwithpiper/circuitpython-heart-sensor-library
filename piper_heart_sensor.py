@@ -23,10 +23,8 @@
 #
 ################################################################################
 
-import busio
-import board
 import time
-import ulab
+from ulab.numpy import min as np_min, max as np_max
 
 __version__ = "1.1.1"
 __repo__ = "https://github.com/buildwithpiper/circuitpython-heart-sensor-library.git"
@@ -133,7 +131,7 @@ class PiperHeartSensor:
     def read_sensor(self):    
         self.read_fifo()
         __current_reading = self.process_reading()
-        __threshold = max(ulab.numpy.max(self.std_dev_readings), -ulab.numpy.min(self.std_dev_readings)) / 2
+        __threshold = max(np_max(self.std_dev_readings), -np_min(self.std_dev_readings)) / 2
         self.heart_beat_detect(__current_reading, __threshold, -__threshold)
         return self.last_reading[-1]
 
